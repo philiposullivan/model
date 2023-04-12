@@ -1,51 +1,179 @@
-import numpy as np
 import pandas as pd
-from sklearn.model_selection import train_test_split, GridSearchCV
-from sklearn.pipeline import Pipeline
-from sklearn.svm import SVC
-from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import accuracy_score, classification_report
+import numpy as np
+from sklearn.model_selection import train_test_split, GridSearchCV, cross_val_score
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import classification_report, accuracy_score
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.impute import SimpleImputer
 from sklearn.decomposition import PCA
-from sklearn.externals import joblib
+from sklearn.feature_selection import SelectKBest, f_classif
+from sklearn.pipeline import Pipeline, FeatureUnion
 
-# Read the dataset
+
+# dataset loaded
 df = pd.read_csv("https://raw.githubusercontent.com/andvise/DataAnalyticsDatasets/main/train_dataset.csv", index_col=0)
 
-# Preprocessing
-X = df.drop(columns=['target'])
+
+# X and y assigned to features and tagert respectively
+X = df.drop('target', axis=1)
 y = df['target']
 
-# Train-test split
+
+# instance created to numerically encode target variable categorical values 
+label_encoder = LabelEncoder()
+y = label_encoder.fit_transform(y)
+
+
+# missing values in the dataframe (N = 19756) need to be replaced, mean was choosen
+X = X.replace([np.inf, -np.inf], np.nan)
+
+
+# data is randomly split (seed=42) '70 : 30' for 'training : testing'
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
 
-# Create a pipeline with preprocessing, PCA, and an SVM classifier
-pipe = Pipeline([
+
+# 'clf' RandomForestClassifier created
+clf = RandomForestClassifier(random_state=42)
+
+
+
+
+# assign PCA and SelectKBest diminentiality redution techniques (reduction, selection)
+pca = PCA(n_components=0.95)
+select_k_best = SelectKBest(f_classif, k=20)
+
+
+
+
+# Create a pipeline with data preprocessing, feature selection, and model training steps
+pipeline = Pipeline([
+    ('imputer', SimpleImputer(strategy='mean')),
     ('scaler', StandardScaler()),
-    ('pca', PCA(n_components=32)),
-    ('classifier', SVC())
+    ('classifier', clf)
+])
+# Create a pipeline with PCA as the dimensionality reduction method
+pipeline_pca = Pipeline([
+    ('imputer', SimpleImputer(strategy='mean')),
+    ('scaler', StandardScaler()),
+    ('reduction', pca),
+    ('classifier', clf)
 ])
 
-# Hyperparameter tuning
+
+# Create a pipeline with SelectKBest as the dimensionality reduction method
+pipeline_select_k_best = Pipeline([
+    ('imputer', SimpleImputer(strategy='mean')),
+    ('scaler', StandardScaler()),
+    ('reduction', select_k_best),
+    ('classifier', clf)
+])
+# Define hyperparameters and their possible values for tuning
 param_grid = {
-    'classifier__C': [0.1, 1, 10],
-    'classifier__kernel': ['linear', 'rbf', 'poly'],
-    'classifier__degree': [2, 3, 4],
-    'classifier__gamma': ['scale', 'auto']
+    'classifier__n_estimators': [5, 10, 30],
+    'classifier__criterion': ['gini', 'entropy'],
+    'classifier__max_depth': [None, 10, 20, 30],
+    'classifier__min_samples_split': [3, 4, 10],
+    'classifier__min_samples_leaf': [1, 2, 4],
+    'classifier__max_features': ['auto', 'sqrt', 'log2']
 }
 
-grid_search = GridSearchCV(pipe, param_grid, cv=5, n_jobs=-1, verbose=1)
+
+print("------------------no dimentionality reduction----------------")
+# Perform hyperparameter tuning using GridSearchCV and cross-validation, with no dimentionality reduction
+grid_search = GridSearchCV(pipeline, param_grid, cv=2, scoring='accuracy', n_jobs=-1)
 grid_search.fit(X_train, y_train)
 
-# Save the best model to a file
-best_model = grid_search.best_estimator_
-joblib.dump(best_model, 'best_model.pkl')
 
-# Print the best hyperparameters and cross-validated accuracy
+# Print the best hyperparameters for the dataframe
 print("Best hyperparameters: ", grid_search.best_params_)
-print("Cross-validated accuracy: ", grid_search.best_score_)
+# make predictions using model
+y_pred = grid_search.predict(X_test)
+no_red = accuracy_score(y_test, y_pred)
+no_red_report = classification_report(y_test, y_pred, target_names=label_encoder.classes_)
 
-# Evaluate the best model on the test set
-y_pred = best_model.predict(X_test)
-print("Accuracy on test set: ", accuracy_score(y_test, y_pred))
-print("\nClassification Report:\n", classification_report(y_test, y_pred))
+
+#print classification report
+print("Accuracy on test set: ", no_red)
+print("\nClassification Report:\n", no_red_report )
+cv_score = cross_val_score(grid_search.best_estimator_, X_train, y_train, cv=5, scoring='accuracy').mean()
+print("Cross-validated accuracy: ", cv_score)
+
+
+
+
+print("------------------PCA dimentionality reduction----------------")
+# Perform hyperparameter tuning using GridSearchCV and cross-validation, with PCA dimentionality reduction
+grid_search_pca = GridSearchCV(pipeline_pca, param_grid, cv=2, scoring='accuracy', n_jobs=-1)
+grid_search_pca.fit(X_train, y_train)
+
+
+# Print the best hyperparameters for the pipeline with PCA
+print("Best hyperparameters for PCA pipeline: ", grid_search_pca.best_params_)
+# make predictions using model
+y_pred = grid_search_pca.predict(X_test)
+pca_red = accuracy_score(y_test, y_pred)
+pca_red_report = classification_report(y_test, y_pred, target_names=label_encoder.classes_)
+
+
+#print classification report
+print("Accuracy on test set: ", pca_red)
+print("\nClassification Report:\n", pca_red_report )
+cv_score_pca = cross_val_score(grid_search_pca.best_estimator_, X_train, y_train, cv=2, scoring='accuracy').mean()
+print("Cross-validated accuracy: ", cv_score_pca)
+
+
+print("------------------Select Nearest Neighbour, k = 20, dimentionality reduction----------------")
+# Perform hyperparameter tuning using GridSearchCV and cross-validation on the pipeline with SelectKBest
+grid_search_select_k_best = GridSearchCV(pipeline_select_k_best, param_grid, cv=2, scoring='accuracy', n_jobs=-1)
+grid_search_select_k_best.fit(X_train, y_train)
+
+
+# Print the best hyperparameters for the pipeline with SelectKBest
+print("Best hyperparameters for SelectKBest pipeline: ", grid_search_select_k_best.best_params_)
+# make predictions using model
+y_pred = grid_search_select_k_best.predict(X_test)
+selectK_red = accuracy_score(y_test, y_pred)
+selectK_red_report = classification_report(y_test, y_pred, target_names=label_encoder.classes_)
+
+
+print("Accuracy on test set: ", selectK_red)
+print("\nClassification Report:\n", selectK_red_report )
+cv_score_k = cross_val_score(grid_search_pca.best_estimator_, X_train, y_train, cv=2, scoring='accuracy').mean()
+print("Cross-validated accuracy: ", cv_score_k)
+
+
+def print_overview():
+    print("Overview:")
+    print("1. The code uses a Decision Tree Classifier to classify instances from the dataset.")
+    print("2. Hold-out and cross-validation are applied for model evaluation.")
+    print("   - 70% of the data is used for training and 30% for testing (hold-out).")
+    print("   - 5-fold cross-validation is used for evaluating the generalization performance.")
+    print("3. Hyperparameter tuning is performed using GridSearchCV with a set of possible values for each hyperparameter.")
+    print("4. Dimensionality reduction techniques used:")
+    print("   - PCA (Principal Component Analysis): It projects data onto lower-dimensional linear subspaces.")
+    print("   - SelectKBest: It selects the best 'k' features based on univariate statistical tests.")
+    print("5. Feature normalization is performed using StandardScaler, which standardizes features by removing the mean and scaling to unit variance.")
+    
+    print("\nResults:")
+    print("1. No dimensionality reduction:")
+    print("   - Accuracy on test set: {no_red:.4f}")
+    print("   - Cross-validated accuracy: {cv_score:.4f}")
+    print("2. PCA dimensionality reduction:")
+    print("   - Accuracy on test set: {pca_red:.4f}")
+    print("   - Cross-validated accuracy: {cv_score_pca:.4f}")
+    print("3. SelectKBest dimensionality reduction (k=20):")
+    print("   - Accuracy on test set: {selectK_red:.4f}")
+    print("   - Cross-validated accuracy: {cv_score_k:.4f}")
+
+
+#this create a tuple containing the name of the model with the highest accuracy and its corresponding accuracy
+    best = max([("No Reduction", no_red), ("PCA", pca_red), ("SelectKBest", selectK_red)], key=lambda x: x[1])
+    m = best[0]
+    a = f"{best[1]:.4f}"
+    print("\nBest Dimensionality Reduction Method:", m)
+    print("Accuracy of method:", a)
+
+
+print_overview()
+
 
